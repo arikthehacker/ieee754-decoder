@@ -1,0 +1,24 @@
+# build output
+*.o
+*.a
+a.out
+core
+hex-2-float
+float-2-hex
+
+# editor / swap
+*~
+*.swp
+*.swo
+.\#*
+\#*\#
+
+# submission archives
+*.tar
+*.tar.gz
+*.zip
+
+# os / ide
+.DS_Store
+.vscode/
+.idea/

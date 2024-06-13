@@ -1,178 +1,294 @@
+// Ariella Marchuk   |||   amarchuk@pdx.edu
+// ========================================
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 #include <math.h>
 
-// Function prototypes
-void print_help(void);
-unsigned long create_mask(int bits);
-void print_binary(unsigned long value, int bits);
+#define BUFFER_LENGTH 1000
 
-void print_help(void) {
-    printf("Usage: ./hex-2-float [OPTION ...]\n");
-    printf(" -i filename    specify the name of an input file\n");
-    printf(" -d             use settings for double precision (double, 64-bits, 1-11-52)\n");
-    printf(" -h             use settings for half precision (binary16, 16-bits, 1-5-10)\n");
-    printf(" -b             use settings for bfloat16 (16-bits, 1-8-7)\n");
-    printf(" -m             use settings for minifloat (8-bits, 1-4-3, bias -2)\n");
-    printf(" -e #           set the number of bits to use for the exponent\n");
-    printf(" -E #           set the value used for the exponent bias\n");
-    printf(" -f #           set the number of bits to use for the fraction\n");
-    printf(" -F #           set the value to add to the fraction (unstored fraction bits)\n");
-    printf(" -v             enable verbose mode\n");
-    printf(" -H             display this help message and exit\n");
-    exit(EXIT_SUCCESS);
-}
+int main(int argc, char **argv) 
+{
+    // initialize variables and set default values
+    short option;
+    short precisionMode = 0;
+    short isVerbose = 0;
 
-unsigned long create_mask(int bits) {
-    unsigned long mask = 1UL;
-    for (int i = 1; i < bits; ++i) {
-        mask = (mask << 1) | 1;
-    }
-    return mask;
-}
+    char inputFile[BUFFER_LENGTH] = {'\0'};
+    char buffer[BUFFER_LENGTH] = {'\0'};
 
-void print_binary(unsigned long value, int bits) {
-    for (int i = bits - 1; i >= 0; --i) {
-        printf("%lu", (value >> i) & 1);
-    }
-}
+    long exponentBits = 8;
+    long fractionBits = 23;
 
-int main(int argc, char *argv[]) {
-    int opt;
-    int exp_bits = 8, frac_bits = 23, exp_bias = 127; // default for float
-    int verbose = 0;
-    int add_to_frac = 0;
-    char buf[41];
-    char hex_str[11]; // To hold the hexadecimal part
-    char input_str[31]; // To hold the remaining input string
-    unsigned long sign_mask, exp_mask, frac_mask, uv;
-    int sign;
-    unsigned long raw_exp, raw_frac;
-    double frac, value;
+    double exponentBias = 0.0;
+    double fractionAddition = 1.0;
 
-    while ((opt = getopt(argc, argv, "i:dhebmE:e:f:F:vH")) != -1) {
-        switch (opt) {
+    FILE *inputStream = NULL;
+
+    uint8_t isNaN = 0;
+    int signMultiplier;
+
+    double exponentValue;
+    double unbiasedExponent;
+    double rawFraction;
+    double fraction;
+    double power;
+    double finalResult;
+
+    unsigned long hexValue;
+    unsigned long bitMask;
+    unsigned long signBit;
+    unsigned long signMask;
+    unsigned long exponentMask;
+
+    // parse command-line options
+    while ((option = getopt(argc, argv, "Hhbmvde:E:f:F:i:")) != -1) 
+    {
+        switch (option) 
+        {
             case 'i':
-                freopen(optarg, "r", stdin);
+                // copy the input file name
+                strcpy(inputFile, optarg);
                 break;
             case 'd':
-                exp_bits = 11;
-                frac_bits = 52;
-                exp_bias = 1023;
+                // set precision mode to double
+                precisionMode = 1;
                 break;
             case 'h':
-                exp_bits = 5;
-                frac_bits = 10;
-                exp_bias = 15;
+                // set precision mode to half
+                precisionMode = 2;
                 break;
             case 'b':
-                exp_bits = 8;
-                frac_bits = 7;
-                exp_bias = 127;
+                // set precision mode to bfloat
+                precisionMode = 3;
                 break;
             case 'm':
-                exp_bits = 4;
-                frac_bits = 3;
-                exp_bias = -2;
+                // set precision mode to minifloat
+                precisionMode = 4;
                 break;
             case 'e':
-                exp_bits = atoi(optarg);
+                // set the number of exponent bits
+                exponentBits = strtol(optarg, NULL, 10);
                 break;
             case 'E':
-                exp_bias = atoi(optarg);
+                // set the exponent bias value
+                exponentBias = strtod(optarg, NULL);
                 break;
             case 'f':
-                frac_bits = atoi(optarg);
+                // set the number of fraction bits
+                fractionBits = strtol(optarg, NULL, 10);
                 break;
             case 'F':
-                add_to_frac = atoi(optarg);
+                // set the fraction addition value
+                fractionAddition = strtod(optarg, NULL);
                 break;
             case 'v':
-                verbose = 1;
+                // enable verbose mode
+                isVerbose = 1;
                 break;
             case 'H':
-                print_help();
-                break;
-            default:
-                print_help();
-                break;
+                // display the help message and exit
+                printf("Usage: ./hex-to-float [OPTIONS ...]\n"
+                       "\t-i [inputFile] | specifies the name of an input file| DEFAULT stdin\n"
+                       "\t-d use settings for double precision (double, 64-bits)\n"
+                       "\t-h use settings for half precision (binary16, 16-bits)\n"
+                       "\t-b use settings for half precision (bfloat16, 16-bits)\n"
+                       "\t-m use settings for quarter precision (minifloat, 8-bits)\n"
+                       "\t-e # set the number of bits to use for the exponent\n"
+                       "\t-E # set the value used for the exponent bias\n"
+                       "\t-f # set the number of bits to use for the fraction\n"
+                       "\t-F # set the value to add to the fraction (unstored fraction bits)\n"
+                       "\t-v verbose mode\n"
+                       "\t-H display this help message and exit.\n");
+                return 0;
         }
     }
 
-    sign_mask = 1UL << (exp_bits + frac_bits);
-    exp_mask = create_mask(exp_bits) << frac_bits;
-    frac_mask = create_mask(frac_bits);
+    // check for unrecognized flags
+    if (optind < argc) 
+    {
+        fprintf(stderr, "\nFlags not recognized:\n");
+        for (int i = optind; i < argc; ++i)
+        {
+            printf("\t%s\n", argv[i]);
+        }
+    }
 
-    while (fgets(buf, sizeof(buf), stdin)) {
-        buf[strcspn(buf, "\n")] = '\0'; // Safely remove the trailing newline character
+    // handle verbose mode and file opening
+    if (isVerbose)
+    {
+        fprintf(stderr, "\n\nread file...\nfile: %s\n", inputFile);
+    }
 
-        // Split input into hexadecimal part and the remaining input string
-        sscanf(buf, "%10s %30[^\n]", hex_str, input_str);
+    if (fractionBits && !fractionAddition) 
+    {
+        fractionAddition = 1;
+    }
 
-        if (sscanf(hex_str, "%lx", &uv) != 1) {
-            fprintf(stderr, "Failed to scan value from input <%s>\n", buf);
+    if (inputFile[0] == '\0') 
+    {
+        inputStream = stdin;
+    } 
+    else 
+    {
+        inputStream = fopen(inputFile, "r");
+    }
+
+    // read each line from the input
+    while (fgets(buffer, BUFFER_LENGTH, inputStream)) 
+    {
+        buffer[strlen(buffer) - 1] = '\0';
+
+        unbiasedExponent = 0;
+        exponentValue = 0;
+        rawFraction = 0.0;
+        fraction = 0.0;
+        signBit = 1.0;
+        isNaN = 0;
+        power = 1;
+        finalResult = 0.0;
+        hexValue = 0x0;
+        exponentMask = 1;
+        signMask = 1L << (exponentBits + fractionBits);
+
+        // convert the hex string to a number
+        if (sscanf(buffer, "%lx", &hexValue) != 1) 
+        {
+            fprintf(stderr, "Failed to scan value from input <%s>\n", buffer);
             exit(EXIT_FAILURE);
-        }
-
-        // Apply addition to the fraction
-        uv += add_to_frac;
-
-        // Extracting sign, exponent, and fraction
-        sign = (uv & sign_mask) ? -1 : 1;
-        raw_exp = (uv & exp_mask) >> frac_bits;
-        raw_frac = uv & frac_mask;
-
-        frac = raw_frac / (double)(1UL << frac_bits);
-
-        // Print input value and binary representation
-        printf("0x%08lx %s\n", uv, input_str); // Print the hexadecimal part and remaining string
-        printf("\t");
-        printf("%d ", (sign == -1) ? 1 : 0); // Print sign bit correctly
-        print_binary(raw_exp, exp_bits);
-        printf(" ");
-        print_binary(raw_frac, frac_bits);
-        printf("\n\ts eeeeeeee fffffffffffffffffffffff\n");
-
-        // Handle special values
-        if (raw_exp == create_mask(exp_bits)) {
-            if (raw_frac == 0) {
-                value = sign == 1 ? INFINITY : -INFINITY;
-                printf("\tspecial value\n\t%s infinity\n", sign == 1 ? "positive" : "negative");
-            } else {
-                value = NAN;
-                printf("\tspecial value\n\tNaN\n");
+        } 
+        else 
+        {
+            // handle precision-specific settings
+            if (precisionMode) 
+            {
+                if (precisionMode == 1) 
+                {
+                    exponentBits = 11;
+                    fractionBits = 52;
+                } 
+                else if (precisionMode == 2) 
+                {
+                    exponentBits = 5;
+                    fractionBits = 10;
+                } 
+                else if (precisionMode == 3) 
+                {
+                    exponentBits = 8;
+                    fractionBits = 7;
+                } 
+                else if (precisionMode == 4) 
+                {
+                    exponentBits = 4;
+                    fractionBits = 3;
+                    exponentBias = -2.0;
+                }
             }
-        } else if (raw_exp == 0) {
-            if (raw_frac == 0) {
-                value = 0.0;
-                printf("\tdenormalized value\n");
-            } else {
-                value = sign * frac * pow(2, 1 - exp_bias);
-                printf("\tdenormalized value\n");
+
+            // calculate the exponent bias if not set
+            if (!exponentBias) 
+            {
+                exponentBias = pow(2, exponentBits - 1) - 1;
             }
-        } else {
-            value = sign * (1 + frac) * pow(2, raw_exp - exp_bias);
-            printf("\tnormalized value\n");
-        }
+            bitMask = 1L << (exponentBits + fractionBits);
+            signBit = hexValue & signMask;
+            signMultiplier = (hexValue & bitMask) ? -1 : 1;
+            rawFraction = 0.0;
+            exponentMask = 1;
+            // create the mask for exponent bits
+            for (int i = 0; i < exponentBits - 1; ++i) 
+            {
+                exponentMask <<= 1;
+                exponentMask |= 1;
+            }
+            exponentMask <<= fractionBits;
+            unbiasedExponent = hexValue & exponentMask;
+            power = 1;
 
-        // Print detailed information
-        printf("\tsign:\t\t%s\n", sign == 1 ? "positive" : "negative");
-        printf("\tbias:\t\t%d\n", exp_bias);
-        printf("\tunbiased exp:\t%lu\n", raw_exp);
-        printf("\tE:\t\t%ld\n", raw_exp == 0 ? (long)(1 - exp_bias) : (long)(raw_exp - exp_bias));
-        printf("\tfrac:\t\t%-.20lf\n", frac);
-        printf("\tM:\t\t%-.20lf\n", 1 + frac);
-        printf("\tvalue:\t\t%-.20lf\n", value);
-        printf("\tvalue:\t\t%-.20le\n\n", value);
+            // print the input value
+            printf("%s\n", buffer);
 
-        // Verbose output
-        if (verbose) {
-            fprintf(stderr, "Verbose mode: hex=%lx, value=%lf\n", uv, value);
+            // print binary representation
+            printf("\t%d ", (signBit) ? 1 : 0);
+            for (int i = exponentBits - 1; i >= 0; --i) 
+            {
+                bitMask >>= 1;
+                printf("%d", (hexValue & bitMask) ? 1 : 0);
+            }
+            printf(" ");
+            for (int i = fractionBits - 1; i >= 0; --i) 
+            {
+                bitMask >>= 1;
+                printf("%d", (hexValue & bitMask) ? 1 : 0);
+                if (hexValue & bitMask) 
+                {
+                    rawFraction += pow(2, (-1 * power));
+                    isNaN = 1;
+                }
+                ++power;
+            }
+            printf("\n\ts ");
+            for (int i = exponentBits; i > 0; --i) 
+            {
+                bitMask >>= 1;
+                printf("e");
+            }
+            printf(" ");
+            for (int i = fractionBits; i > 0; --i) 
+            {
+                bitMask >>= 1;
+                printf("f");
+            }
+
+            // handle special values
+            if (unbiasedExponent == exponentMask) 
+            {
+                if (!isNaN) 
+                {
+                    if (!signBit)
+                        printf("\n\tspecial value\n\tpositive infinity\n\n");
+                    else
+                        printf("\n\tspecial value\n\tnegative infinity\n\n");
+                } 
+                else
+                    printf("\n\tspecial value\n\tNaN\n\n");
+            } 
+            else 
+            {
+                unbiasedExponent = hexValue & exponentMask;
+                unbiasedExponent = (unsigned long)unbiasedExponent >> fractionBits;
+                fraction = fractionAddition + rawFraction;
+
+                // calculate normalized and denormalized values
+                if (unbiasedExponent == 0) 
+                {
+                    exponentValue = (1 - exponentBias);
+                    fraction = rawFraction;
+                } 
+                else 
+                {
+                    exponentValue = unbiasedExponent - exponentBias;
+                    fraction = fractionAddition + rawFraction;
+                }
+
+                finalResult = (signMultiplier * fraction * pow(2, exponentValue));
+                printf("\n");
+                printf("\t%s\n", (unbiasedExponent == 0) ? "denormalized value" : "normalized value");
+                printf("\tsign:\t\t%s\n", (!signBit) ? "positive" : "negative");
+                printf("\tbias:\t\t%-10.0lf\n", exponentBias);
+                printf("\tunbiased exp:\t%-10.0lf\n", unbiasedExponent);
+                printf("\tE:\t\t%-10.0f\n", exponentValue);
+                printf("\tfrac:\t\t%-.20lf\n", rawFraction);
+                printf("\tM:\t\t%-.20lf\n", fraction);
+                printf("\tvalue:\t\t%-.20lf\n", finalResult);
+                printf("\tvalue:\t\t%-.20le\n\n", finalResult);
+            }
         }
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 

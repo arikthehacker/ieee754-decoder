@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
     }
 
     while (fgets(buf, sizeof(buf), stdin)) {
-        buf[strlen(buf) - 1] = '\0'; // Remove the trailing newline character
+        buf[strlen(buf) - 1] = '\0'; 
 
         if (use_double) {
             double d;
